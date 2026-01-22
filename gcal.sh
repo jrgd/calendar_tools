@@ -2,7 +2,7 @@
 
 # Path to your .env file
 ENV_FILE="$(dirname "$0")/.env"
-CAL_FILE="$HOME/calendar"
+CAL_FILE="./calendar" # use $HOME later
 TEMP_RAW="/tmp/cal_raw.txt"
 TODAY=$(date +%Y%m%d)
 
