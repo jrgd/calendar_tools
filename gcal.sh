@@ -171,6 +171,45 @@ convert_date() {
     fi
 }
 
+# Function to convert time with timezone to local time (returns HH:MM)
+convert_time() {
+    local raw_date=$1
+    local tzid=$2
+    
+    # If it's an all-day event (8 digits only), return empty
+    if [[ ${#raw_date} -eq 8 ]]; then
+        echo ""
+        return
+    fi
+    
+    # Parse the date string
+    if [[ $raw_date =~ ^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})([0-9]{2})(Z)?$ ]]; then
+        year=${BASH_REMATCH[1]}
+        month=${BASH_REMATCH[2]}
+        day=${BASH_REMATCH[3]}
+        hour=${BASH_REMATCH[4]}
+        min=${BASH_REMATCH[5]}
+        sec=${BASH_REMATCH[6]}
+        is_utc=${BASH_REMATCH[7]}
+        
+        if [[ -n "$is_utc" ]]; then
+            # UTC time - convert to local time
+            date -d "${year}-${month}-${day} ${hour}:${min}:${sec} UTC" "+%H:%M" 2>/dev/null || echo ""
+        elif [[ -n "$tzid" ]]; then
+            # Timezone specified - convert from that timezone to local
+            TZ="$tzid" date -d "${year}-${month}-${day} ${hour}:${min}:${sec}" "+%H:%M" 2>/dev/null || \
+            date -d "TZ=\"$tzid\" ${year}-${month}-${day} ${hour}:${min}:${sec}" "+%H:%M" 2>/dev/null || \
+            echo ""
+        else
+            # Assume local time
+            date -d "${year}-${month}-${day} ${hour}:${min}:${sec}" "+%H:%M" 2>/dev/null || echo ""
+        fi
+    else
+        # Fallback: empty
+        echo ""
+    fi
+}
+
 # Function to expand recurring events
 expand_recurrence() {
     local dtstart=$1
@@ -342,9 +381,17 @@ expand_recurrence() {
             fi
             
             # Convert to local date and only output if within the 2-month window (filter AFTER expansion)
-            local_date=$(convert_date "${current_date}${hour}${min}${sec}" "$tzid")
+            # Build datetime string with T separator: YYYYMMDDTHHMMSS
+            datetime_str="${current_date}T${hour}${min}${sec}"
+            local_date=$(convert_date "$datetime_str" "$tzid")
             if [[ -n "$local_date" ]] && [[ $local_date -ge "$TODAY" ]] && [[ $local_date -le "$END_DATE" ]]; then
-                echo -e "${local_date}\t${summary}"
+                # Get the time in local timezone
+                local_time=$(convert_time "$datetime_str" "$tzid")
+                if [[ -n "$local_time" ]]; then
+                    echo -e "${local_date}\t${summary}, ${local_time}"
+                else
+                    echo -e "${local_date}\t${summary}"
+                fi
             fi
             
             occurrences=$((occurrences + 1))
@@ -447,7 +494,13 @@ while IFS=$'\t' read -r line || [[ -n "$line" ]]; do
                 fi
                 
                 while [[ $current_day -le "$max_day" ]]; do
-                    echo -e "${current_day}\t${summary}" >> "$TEMP_EXPANDED"
+                    # For multi-day events, get time from the original start date
+                    local_time=$(convert_time "$raw_date" "$tzid")
+                    if [[ -n "$local_time" ]]; then
+                        echo -e "${current_day}\t${summary}, ${local_time}" >> "$TEMP_EXPANDED"
+                    else
+                        echo -e "${current_day}\t${summary}" >> "$TEMP_EXPANDED"
+                    fi
                     # Move to next day
                     current_day=$(date -d "${current_day:0:4}-${current_day:4:2}-${current_day:6:2} +1 day" "+%Y%m%d" 2>/dev/null || echo "$current_day")
                     # Safety check
@@ -457,7 +510,13 @@ while IFS=$'\t' read -r line || [[ -n "$line" ]]; do
                 done
             else
                 # Single-day event (or same-day event with start/end times)
-                echo -e "${local_start}\t${summary}" >> "$TEMP_EXPANDED"
+                # Get the time in local timezone
+                local_time=$(convert_time "$raw_date" "$tzid")
+                if [[ -n "$local_time" ]]; then
+                    echo -e "${local_start}\t${summary}, ${local_time}" >> "$TEMP_EXPANDED"
+                else
+                    echo -e "${local_start}\t${summary}" >> "$TEMP_EXPANDED"
+                fi
             fi
         fi
     fi
