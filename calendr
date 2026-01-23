@@ -5,10 +5,13 @@
 
 CAL_FILE="$(dirname "$0")/calendar"
 
-# Check for --count option
+# Check for options
 COUNT_ONLY=false
+WAYBAR_JSON=false
 if [[ "$1" == "--count" ]]; then
     COUNT_ONLY=true
+elif [[ "$1" == "--waybar-json" ]]; then
+    WAYBAR_JSON=true
 fi
 
 # Get current date info
@@ -86,10 +89,8 @@ while IFS=$'\t' read -r date_str event_desc || [[ -n "$date_str" ]]; do
     done
 done < "$CAL_FILE"
 
-# Output results
-if [[ "$COUNT_ONLY" == true ]]; then
-    echo "$TOTAL_COUNT"
-else
+# Function to generate formatted output
+generate_formatted_output() {
     # Output events grouped by date
     # Sort dates chronologically using the normalized target dates
     for i in "${!TARGET_DATES_NORMALIZED[@]}"; do
@@ -146,4 +147,37 @@ else
             echo ""  # Empty line between dates
         fi
     done
+}
+
+# Function to escape JSON string
+escape_json() {
+    local str="$1"
+    # Escape backslashes first
+    str="${str//\\/\\\\}"
+    # Escape quotes
+    str="${str//\"/\\\"}"
+    # Escape newlines
+    str="${str//$'\n'/\\n}"
+    # Escape tabs
+    str="${str//$'\t'/\\t}"
+    echo -n "$str"
+}
+
+# Output results
+if [[ "$COUNT_ONLY" == true ]]; then
+    echo "$TOTAL_COUNT"
+elif [[ "$WAYBAR_JSON" == true ]]; then
+    # Generate formatted output for tooltip
+    TOOLTIP_OUTPUT=$(generate_formatted_output)
+    # Remove trailing newline from tooltip
+    TOOLTIP_OUTPUT="${TOOLTIP_OUTPUT%$'\n'}"
+    
+    # Escape the tooltip for JSON
+    TOOLTIP_ESCAPED=$(escape_json "$TOOLTIP_OUTPUT")
+    
+    # Output JSON
+    echo "{\"text\":\"$TOTAL_COUNT\",\"tooltip\":\"$TOOLTIP_ESCAPED\"}"
+else
+    # Regular output
+    generate_formatted_output
 fi
