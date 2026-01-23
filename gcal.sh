@@ -6,7 +6,7 @@ CAL_FILE="./calendar" # use $HOME later
 TEMP_RAW="/tmp/cal_raw.txt"
 TODAY=$(date +%Y%m%d)
 NOW_TIME=$(date +%H:%M)
-END_DATE=$(date -d "+2 months" "+%Y%m%d" 2>/dev/null || date -v+2m "+%Y%m%d" 2>/dev/null || echo "$(date -d "$(date +%Y-%m-01) +3 months -1 day" "+%Y%m%d")")
+END_DATE=$(date -d "$TODAY +2 months" "+%Y%m%d")
 
 # 1. Load the .env file
 if [ -f "$ENV_FILE" ]; then
@@ -23,8 +23,8 @@ fi
 for URL in $CAL_URLS; do
     # Skip empty lines or comments
     [[ -z "$URL" || "$URL" == \#* ]] && continue
-
-    echo "Fetching: $URL"
+    i=$((i+1))
+    echo "Fetching url $i"
     # First pass: handle line continuations (lines starting with space/tab)
     curl -s "$URL" | sed 's/\r//' | awk '
     {
@@ -400,14 +400,197 @@ expand_recurrence() {
                     ;;
                 MONTHLY)
                     # For monthly, advance until we're at or past TODAY
-                    while [[ $current_date -lt "$TODAY" ]]; do
-                        current_date=$(date -d "${current_date:0:4}-${current_date:4:2}-${current_date:6:2} +${interval} months" "+%Y%m%d" 2>/dev/null || echo "$TODAY")
-                        if [[ $current_date == "$TODAY" ]] || [[ ${#current_date} -ne 8 ]]; then
-                            break
+                    if [[ -n "$byday" ]] && [[ $byday =~ ^([1-5])([A-Z]{2})$ ]]; then
+                        # MONTHLY with BYDAY - find next occurrence of Nth day
+                        occurrence_num=${BASH_REMATCH[1]}
+                        day_abbr=${BASH_REMATCH[2]}
+                        day_name=""
+                        case "$day_abbr" in
+                            MO) day_name="Monday" ;;
+                            TU) day_name="Tuesday" ;;
+                            WE) day_name="Wednesday" ;;
+                            TH) day_name="Thursday" ;;
+                            FR) day_name="Friday" ;;
+                            SA) day_name="Saturday" ;;
+                            SU) day_name="Sunday" ;;
+                        esac
+                        if [[ -n "$day_name" ]]; then
+                            # Find the Nth occurrence of the day in the current month or next month
+                            # Map day name to day number (1=Monday, 7=Sunday)
+                            day_num=1
+                            case "$day_name" in
+                                Monday) day_num=1 ;;
+                                Tuesday) day_num=2 ;;
+                                Wednesday) day_num=3 ;;
+                                Thursday) day_num=4 ;;
+                                Friday) day_num=5 ;;
+                                Saturday) day_num=6 ;;
+                                Sunday) day_num=7 ;;
+                            esac
+                            
+                            # Try current month first
+                            current_month=$(date -d "$TODAY" "+%Y-%m-01" 2>/dev/null)
+                            if [[ -n "$current_month" ]]; then
+                                # Get day of week of first day of month (1=Mon, 7=Sun)
+                                first_day_dow=$(date -d "$current_month" +%u 2>/dev/null || echo 1)
+                                # Calculate days to first occurrence of target day
+                                if [[ $first_day_dow -le $day_num ]]; then
+                                    days_to_first=$((day_num - first_day_dow))
+                                else
+                                    days_to_first=$((7 - first_day_dow + day_num))
+                                fi
+                                first_occurrence=$(date -d "$current_month +${days_to_first} days" "+%Y%m%d" 2>/dev/null)
+                                if [[ -n "$first_occurrence" ]]; then
+                                    nth_occurrence_current=$(date -d "${first_occurrence:0:4}-${first_occurrence:4:2}-${first_occurrence:6:2} +$((occurrence_num - 1)) weeks" "+%Y%m%d" 2>/dev/null)
+                                    # If this month's occurrence is today or in the future, use it
+                                    # IMPORTANT: Always use nth_occurrence_current if it's >= TODAY, even if it's exactly TODAY
+                                    if [[ -n "$nth_occurrence_current" ]] && [[ $nth_occurrence_current -ge "$TODAY" ]]; then
+                                        # Force set current_date to the calculated nth occurrence
+                                        current_date="$nth_occurrence_current"
+                                    else
+                                        # Try next month
+                                        next_month=$(date -d "$current_month +${interval} months" "+%Y-%m-01" 2>/dev/null)
+                                        if [[ -n "$next_month" ]]; then
+                                            first_day_dow=$(date -d "$next_month" +%u 2>/dev/null || echo 1)
+                                            if [[ $first_day_dow -le $day_num ]]; then
+                                                days_to_first=$((day_num - first_day_dow))
+                                            else
+                                                days_to_first=$((7 - first_day_dow + day_num))
+                                            fi
+                                            first_occurrence_next=$(date -d "$next_month +${days_to_first} days" "+%Y%m%d" 2>/dev/null)
+                                            if [[ -n "$first_occurrence_next" ]]; then
+                                                nth_occurrence_next=$(date -d "${first_occurrence_next:0:4}-${first_occurrence_next:4:2}-${first_occurrence_next:6:2} +$((occurrence_num - 1)) weeks" "+%Y%m%d" 2>/dev/null)
+                                                if [[ -n "$nth_occurrence_next" ]]; then
+                                                    current_date="$nth_occurrence_next"
+                                                fi
+                                            fi
+                                        fi
+                                    fi
+                                    # Final fallback: ensure current_date is set and >= TODAY
+                                    # Only use this if current_date wasn't set above (shouldn't happen if logic above worked)
+                                    if [[ $current_date -lt "$TODAY" ]]; then
+                                        # This should only happen if the conditions above didn't set current_date
+                                        # Use the calculated nth_occurrence from current month if it exists and is valid
+                                        if [[ -n "$nth_occurrence_current" ]] && [[ $nth_occurrence_current -ge "$TODAY" ]]; then
+                                            current_date="$nth_occurrence_current"
+                                        elif [[ -n "$nth_occurrence_next" ]] && [[ $nth_occurrence_next -ge "$TODAY" ]]; then
+                                            current_date="$nth_occurrence_next"
+                                        fi
+                                    fi
+                                    # Final safeguard: if nth_occurrence_current is valid and >= TODAY, use it
+                                    # This ensures we always use the calculated date, even if something went wrong above
+                                    if [[ -n "$nth_occurrence_current" ]] && [[ $nth_occurrence_current -ge "$TODAY" ]]; then
+                                        current_date="$nth_occurrence_current"
+                                    elif [[ -n "$nth_occurrence_next" ]] && [[ $nth_occurrence_next -ge "$TODAY" ]]; then
+                                        current_date="$nth_occurrence_next"
+                                    fi
+                                fi
+                            fi
+                        else
+                            # Fallback: just advance by months (shouldn't happen if BYDAY parsing worked)
+                            while [[ $current_date -lt "$TODAY" ]]; do
+                                next_date=$(date -d "${current_date:0:4}-${current_date:4:2}-${current_date:6:2} +${interval} months" "+%Y%m%d" 2>/dev/null)
+                                if [[ -n "$next_date" ]] && [[ ${#next_date} -eq 8 ]] && [[ $next_date -ge "$TODAY" ]]; then
+                                    current_date="$next_date"
+                                    break
+                                elif [[ -n "$next_date" ]] && [[ ${#next_date} -eq 8 ]]; then
+                                    current_date="$next_date"
+                                else
+                                    break
+                                fi
+                            done
                         fi
-                    done
+                    else
+                        # No BYDAY, just advance by months
+                        while [[ $current_date -lt "$TODAY" ]]; do
+                            next_date=$(date -d "${current_date:0:4}-${current_date:4:2}-${current_date:6:2} +${interval} months" "+%Y%m%d" 2>/dev/null)
+                            if [[ -n "$next_date" ]] && [[ ${#next_date} -eq 8 ]] && [[ $next_date -ge "$TODAY" ]]; then
+                                current_date="$next_date"
+                                break
+                            elif [[ -n "$next_date" ]] && [[ ${#next_date} -eq 8 ]]; then
+                                current_date="$next_date"
+                            else
+                                break
+                            fi
+                        done
+                    fi
                     ;;
             esac
+        fi
+        
+        # For MONTHLY with BYDAY, ALWAYS recalculate the first occurrence to ensure correctness
+        # The fast-forward may have failed or set an incorrect date, so we recalculate here
+        if [[ "$freq" == "MONTHLY" ]] && [[ -n "$byday" ]] && [[ $byday =~ ^([1-5])([A-Z]{2})$ ]]; then
+            occurrence_num=${BASH_REMATCH[1]}
+            day_abbr=${BASH_REMATCH[2]}
+            day_name=""
+            case "$day_abbr" in
+                MO) day_name="Monday" ;;
+                TU) day_name="Tuesday" ;;
+                WE) day_name="Wednesday" ;;
+                TH) day_name="Thursday" ;;
+                FR) day_name="Friday" ;;
+                SA) day_name="Saturday" ;;
+                SU) day_name="Sunday" ;;
+            esac
+            if [[ -n "$day_name" ]]; then
+                day_num=1
+                case "$day_name" in
+                    Monday) day_num=1 ;;
+                    Tuesday) day_num=2 ;;
+                    Wednesday) day_num=3 ;;
+                    Thursday) day_num=4 ;;
+                    Friday) day_num=5 ;;
+                    Saturday) day_num=6 ;;
+                    Sunday) day_num=7 ;;
+                esac
+                # Always calculate the Nth occurrence of the current month (or next if current month's has passed)
+                current_month=$(date -d "$TODAY" "+%Y-%m-01" 2>/dev/null)
+                if [[ -n "$current_month" ]]; then
+                    first_day_dow=$(date -d "$current_month" +%u 2>/dev/null || echo 1)
+                    if [[ $first_day_dow -le $day_num ]]; then
+                        days_to_first=$((day_num - first_day_dow))
+                    else
+                        days_to_first=$((7 - first_day_dow + day_num))
+                    fi
+                    first_occurrence=$(date -d "$current_month +${days_to_first} days" "+%Y%m%d" 2>/dev/null)
+                    if [[ -n "$first_occurrence" ]]; then
+                        nth_occurrence=$(date -d "${first_occurrence:0:4}-${first_occurrence:4:2}-${first_occurrence:6:2} +$((occurrence_num - 1)) weeks" "+%Y%m%d" 2>/dev/null)
+                        # Use this month's occurrence if it's >= TODAY, otherwise try next month
+                        if [[ -n "$nth_occurrence" ]] && [[ $nth_occurrence -ge "$TODAY" ]]; then
+                            # Force set current_date to the calculated nth occurrence
+                            current_date="$nth_occurrence"
+                        else
+                            # Try next month
+                            next_month=$(date -d "$current_month +${interval} months" "+%Y-%m-01" 2>/dev/null)
+                            if [[ -n "$next_month" ]]; then
+                                first_day_dow=$(date -d "$next_month" +%u 2>/dev/null || echo 1)
+                                if [[ $first_day_dow -le $day_num ]]; then
+                                    days_to_first=$((day_num - first_day_dow))
+                                else
+                                    days_to_first=$((7 - first_day_dow + day_num))
+                                fi
+                                first_occurrence_next=$(date -d "$next_month +${days_to_first} days" "+%Y%m%d" 2>/dev/null)
+                                if [[ -n "$first_occurrence_next" ]]; then
+                                    nth_occurrence_next=$(date -d "${first_occurrence_next:0:4}-${first_occurrence_next:4:2}-${first_occurrence_next:6:2} +$((occurrence_num - 1)) weeks" "+%Y%m%d" 2>/dev/null)
+                                    if [[ -n "$nth_occurrence_next" ]]; then
+                                        # Force set current_date to the calculated nth occurrence of next month
+                                        current_date="$nth_occurrence_next"
+                                    fi
+                                fi
+                            fi
+                        fi
+                        # Final safeguard: if we calculated nth_occurrence for current month and it's valid, use it
+                        if [[ -z "$current_date" ]] || [[ $current_date -lt "$TODAY" ]]; then
+                            if [[ -n "$nth_occurrence" ]] && [[ $nth_occurrence -ge "$TODAY" ]]; then
+                                current_date="$nth_occurrence"
+                            elif [[ -n "$nth_occurrence_next" ]] && [[ $nth_occurrence_next -ge "$TODAY" ]]; then
+                                current_date="$nth_occurrence_next"
+                            fi
+                        fi
+                    fi
+                fi
+            fi
         fi
         
         # Now expand all occurrences from current_date forward
@@ -421,18 +604,100 @@ expand_recurrence() {
             fi
             
             # Convert to local date and only output if within the 2-month window (filter AFTER expansion)
-            # Build datetime string with T separator: YYYYMMDDTHHMMSS
-            datetime_str="${current_date}T${hour}${min}${sec}"
-            local_date=$(convert_date "$datetime_str" "$tzid")
+            # For MONTHLY BYDAY events, ALWAYS recalculate the date from current_date's month
+            # This ensures we always use the correct calculated date, not just current_date directly
+            local_date=""
+            # For MONTHLY BYDAY events, always recalculate the date from current_date's month
+            # This is critical because the day number changes each month (e.g., 4th Sunday can be 22nd, 25th, 26th, etc.)
+            if [[ "$freq" == "MONTHLY" ]] && [[ -n "$byday" ]] && [[ $byday =~ ^([1-5])([A-Z]{2})$ ]]; then
+                occurrence_num=${BASH_REMATCH[1]}
+                day_abbr=${BASH_REMATCH[2]}
+                day_name=""
+                case "$day_abbr" in
+                    MO) day_name="Monday" ;;
+                    TU) day_name="Tuesday" ;;
+                    WE) day_name="Wednesday" ;;
+                    TH) day_name="Thursday" ;;
+                    FR) day_name="Friday" ;;
+                    SA) day_name="Saturday" ;;
+                    SU) day_name="Sunday" ;;
+                esac
+                if [[ -n "$day_name" ]]; then
+                    day_num=1
+                    case "$day_name" in
+                        Monday) day_num=1 ;;
+                        Tuesday) day_num=2 ;;
+                        Wednesday) day_num=3 ;;
+                        Thursday) day_num=4 ;;
+                        Friday) day_num=5 ;;
+                        Saturday) day_num=6 ;;
+                        Sunday) day_num=7 ;;
+                    esac
+                    # Only recalculate for the first occurrence
+                    # For subsequent occurrences, the expansion loop already calculated the correct date in current_date
+                    if [[ $occurrences -eq 0 ]]; then
+                        # First occurrence - use TODAY's month to get the correct first date
+                        target_month=$(date -d "$TODAY" "+%Y-%m-01" 2>/dev/null)
+                    else
+                        # Subsequent occurrences - skip recalculation, will use current_date directly below
+                        target_month=""
+                    fi
+                    if [[ -n "$target_month" ]]; then
+                        first_day_dow=$(date -d "$target_month" +%u 2>/dev/null || echo 1)
+                        if [[ $first_day_dow -le $day_num ]]; then
+                            days_to_first=$((day_num - first_day_dow))
+                        else
+                            days_to_first=$((7 - first_day_dow + day_num))
+                        fi
+                        first_occurrence=$(date -d "$target_month +${days_to_first} days" "+%Y%m%d" 2>/dev/null)
+                        if [[ -n "$first_occurrence" ]]; then
+                            nth_occurrence=$(date -d "${first_occurrence:0:4}-${first_occurrence:4:2}-${first_occurrence:6:2} +$((occurrence_num - 1)) weeks" "+%Y%m%d" 2>/dev/null)
+                            # Always use the calculated nth_occurrence if it exists and is >= TODAY
+                            # This ensures we use the correct date, not whatever current_date was set to
+                            if [[ -n "$nth_occurrence" ]]; then
+                                # Only use it if it's >= TODAY (don't show past occurrences)
+                                if [[ $nth_occurrence -ge "$TODAY" ]]; then
+                                    # Force set local_date to the calculated value - this is the correct date
+                                    local_date="$nth_occurrence"
+                                    # Update current_date to the calculated date so expansion loop can use it
+                                    current_date="$nth_occurrence"
+                                fi
+                            fi
+                        fi
+                    fi
+                fi
+            fi
+            
+            # If local_date wasn't set by first occurrence check, use current_date directly
+            # For MONTHLY BYDAY events, the expansion loop already calculated the correct date in current_date
+            # So we should use current_date directly, not recalculate
+            if [[ -z "$local_date" ]]; then
+                # Check if this is an all-day event (8-digit date, no time)
+                if [[ ${#dtstart} -eq 8 ]]; then
+                    # All-day event - use date directly
+                    local_date="$current_date"
+                else
+                    # Timed event - build datetime string with T separator: YYYYMMDDTHHMMSS
+                    datetime_str="${current_date}T${hour}${min}${sec}"
+                    local_date=$(convert_date "$datetime_str" "$tzid")
+                fi
+            fi
+            
             if [[ -n "$local_date" ]] && [[ $local_date -ge "$TODAY" ]] && [[ $local_date -le "$END_DATE" ]]; then
                 # Check if event is still ongoing (not finished if it's today)
-                if is_event_ongoing "$local_date" "$dtend" "$tzid"; then
-                    # Get the time in local timezone
-                    local_time=$(convert_time "$datetime_str" "$tzid")
-                    if [[ -n "$local_time" ]]; then
-                        echo -e "${local_date}\t${summary}, ${local_time}"
-                    else
+                # For all-day events, always keep them (no end time to check)
+                if [[ ${#dtstart} -eq 8 ]] || is_event_ongoing "$local_date" "$dtend" "$tzid"; then
+                    # Get the time in local timezone (only for timed events)
+                    if [[ ${#dtstart} -eq 8 ]]; then
+                        # All-day event - no time
                         echo -e "${local_date}\t${summary}"
+                    else
+                        local_time=$(convert_time "$datetime_str" "$tzid")
+                        if [[ -n "$local_time" ]]; then
+                            echo -e "${local_date}\t${summary}, ${local_time}"
+                        else
+                            echo -e "${local_date}\t${summary}"
+                        fi
                     fi
                 fi
             fi
@@ -440,6 +705,7 @@ expand_recurrence() {
             occurrences=$((occurrences + 1))
             
             # Calculate next occurrence based on frequency
+            # For MONTHLY BYDAY, this will recalculate current_date for the next month
             case "$freq" in
                 DAILY)
                     current_date=$(date -d "${current_date:0:4}-${current_date:4:2}-${current_date:6:2} +${interval} days" "+%Y%m%d" 2>/dev/null || echo "$current_date")
@@ -453,7 +719,71 @@ expand_recurrence() {
                     fi
                     ;;
                 MONTHLY)
-                    current_date=$(date -d "${current_date:0:4}-${current_date:4:2}-${current_date:6:2} +${interval} months" "+%Y%m%d" 2>/dev/null || echo "$current_date")
+                    if [[ -n "$byday" ]]; then
+                        # Parse BYDAY format: 1MO, 2TU, 4SU, etc. or just MO, TU, etc.
+                        # Extract occurrence number (1-5) and day
+                        if [[ $byday =~ ^([1-5])([A-Z]{2})$ ]]; then
+                            occurrence_num=${BASH_REMATCH[1]}
+                            day_abbr=${BASH_REMATCH[2]}
+                            
+                            # Map day abbreviations to day names
+                            day_name=""
+                            case "$day_abbr" in
+                                MO) day_name="Monday" ;;
+                                TU) day_name="Tuesday" ;;
+                                WE) day_name="Wednesday" ;;
+                                TH) day_name="Thursday" ;;
+                                FR) day_name="Friday" ;;
+                                SA) day_name="Saturday" ;;
+                                SU) day_name="Sunday" ;;
+                            esac
+                            
+                            if [[ -n "$day_name" ]]; then
+                                # For MONTHLY with BYDAY, we MUST recalculate the Nth occurrence for the next month
+                                # We can't just add a month because the day number will be different each month
+                                # Move to next month
+                                next_month=$(date -d "${current_date:0:4}-${current_date:4:2}-01 +${interval} months" "+%Y-%m-01" 2>/dev/null)
+                                if [[ -n "$next_month" ]]; then
+                                    # Map day name to day number (1=Monday, 7=Sunday)
+                                    day_num=1
+                                    case "$day_name" in
+                                        Monday) day_num=1 ;;
+                                        Tuesday) day_num=2 ;;
+                                        Wednesday) day_num=3 ;;
+                                        Thursday) day_num=4 ;;
+                                        Friday) day_num=5 ;;
+                                        Saturday) day_num=6 ;;
+                                        Sunday) day_num=7 ;;
+                                    esac
+                                    # Get day of week of first day of next month
+                                    first_day_dow=$(date -d "$next_month" +%u 2>/dev/null || echo 1)
+                                    # Calculate days to first occurrence of target day in next month
+                                    if [[ $first_day_dow -le $day_num ]]; then
+                                        days_to_first=$((day_num - first_day_dow))
+                                    else
+                                        days_to_first=$((7 - first_day_dow + day_num))
+                                    fi
+                                    first_occurrence=$(date -d "$next_month +${days_to_first} days" "+%Y%m%d" 2>/dev/null)
+                                    # Add (N-1) weeks to get Nth occurrence in next month
+                                    if [[ -n "$first_occurrence" ]]; then
+                                        nth_occurrence=$(date -d "${first_occurrence:0:4}-${first_occurrence:4:2}-${first_occurrence:6:2} +$((occurrence_num - 1)) weeks" "+%Y%m%d" 2>/dev/null)
+                                        if [[ -n "$nth_occurrence" ]]; then
+                                            current_date="$nth_occurrence"
+                                        fi
+                                    fi
+                                fi
+                            else
+                                # Fallback: just advance by months
+                                current_date=$(date -d "${current_date:0:4}-${current_date:4:2}-${current_date:6:2} +${interval} months" "+%Y%m%d" 2>/dev/null || echo "$current_date")
+                            fi
+                        else
+                            # BYDAY without number or unrecognized format - fallback
+                            current_date=$(date -d "${current_date:0:4}-${current_date:4:2}-${current_date:6:2} +${interval} months" "+%Y%m%d" 2>/dev/null || echo "$current_date")
+                        fi
+                    else
+                        # No BYDAY, just advance by months
+                        current_date=$(date -d "${current_date:0:4}-${current_date:4:2}-${current_date:6:2} +${interval} months" "+%Y%m%d" 2>/dev/null || echo "$current_date")
+                    fi
                     ;;
                 YEARLY)
                     current_date=$(date -d "${current_date:0:4}-${current_date:4:2}-${current_date:6:2} +${interval} years" "+%Y%m%d" 2>/dev/null || echo "$current_date")
@@ -479,8 +809,31 @@ while IFS=$'\t' read -r line || [[ -n "$line" ]]; do
     
     if [[ $line =~ ^RECURRING ]]; then
         # Recurring event - format: RECURRING<TAB>dtstart<TAB>dtend<TAB>tzid<TAB>rrule<TAB>summary
+        # Handle empty fields (multiple tabs) by using a more robust parsing approach
         IFS=$'\t' read -r _ dtstart dtend tzid rrule summary <<< "$line"
+        # If rrule is empty or looks like a summary, the fields might be shifted
+        # Check if rrule doesn't start with FREQ=, then it's likely the summary and fields are shifted
+        if [[ -n "$rrule" ]] && [[ ! "$rrule" =~ ^FREQ= ]]; then
+            # Fields are shifted: tzid is actually rrule, rrule is actually summary
+            # Re-parse more carefully
+            IFS=$'\t' read -ra FIELDS <<< "$line"
+            if [[ ${#FIELDS[@]} -ge 6 ]]; then
+                dtstart="${FIELDS[1]}"
+                dtend="${FIELDS[2]}"
+                tzid="${FIELDS[3]}"
+                rrule="${FIELDS[4]}"
+                summary="${FIELDS[5]}"
+            elif [[ ${#FIELDS[@]} -eq 5 ]]; then
+                # No tzid field (empty)
+                dtstart="${FIELDS[1]}"
+                dtend="${FIELDS[2]}"
+                tzid=""
+                rrule="${FIELDS[3]}"
+                summary="${FIELDS[4]}"
+            fi
+        fi
         [[ "$dtend" == "NONE" ]] && dtend=""
+        [[ "$tzid" == "NONE" ]] && tzid=""
         expand_recurrence "$dtstart" "$dtend" "$tzid" "$rrule" "$summary" >> "$TEMP_EXPANDED"
     else
         # Single event - format: dtstart_full<TAB>dtend_full<TAB>tzid<TAB>summary
