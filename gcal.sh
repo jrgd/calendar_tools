@@ -7,6 +7,8 @@ TEMP_RAW="/tmp/cal_raw.txt"
 TODAY=$(date +%Y%m%d)
 NOW_TIME=$(date +%H:%M)
 END_DATE=$(date -d "$TODAY +2 months" "+%Y%m%d")
+# Default start time for multi-day events on days after the first day
+DAY_START_TIME="${DAY_START_TIME:-07:00}"
 
 # 1. Load the .env file
 if [ -f "$ENV_FILE" ]; then
@@ -892,12 +894,19 @@ while IFS=$'\t' read -r line || [[ -n "$line" ]]; do
                 while [[ $current_day -le "$max_day" ]]; do
                     # For multi-day events, check if still ongoing (only relevant if it's today)
                     if is_event_ongoing "$current_day" "$dtend_date" "$tzid"; then
-                        # For multi-day events, get time from the original start date
-                        local_time=$(convert_time "$raw_date" "$tzid")
-                        if [[ -n "$local_time" ]]; then
-                            echo -e "${current_day}\t${summary}, ${local_time}" >> "$TEMP_EXPANDED"
+                        # For multi-day events, use original start time only on the first day
+                        # On subsequent days, use DAY_START_TIME
+                        if [[ $current_day == "$local_start" ]]; then
+                            # First day - use original start time
+                            local_time=$(convert_time "$raw_date" "$tzid")
+                            if [[ -n "$local_time" ]]; then
+                                echo -e "${current_day}\t${summary}, ${local_time}" >> "$TEMP_EXPANDED"
+                            else
+                                echo -e "${current_day}\t${summary}" >> "$TEMP_EXPANDED"
+                            fi
                         else
-                            echo -e "${current_day}\t${summary}" >> "$TEMP_EXPANDED"
+                            # Subsequent days - use DAY_START_TIME
+                            echo -e "${current_day}\t${summary}, ${DAY_START_TIME}" >> "$TEMP_EXPANDED"
                         fi
                     fi
                     # Move to next day
@@ -925,12 +934,38 @@ while IFS=$'\t' read -r line || [[ -n "$line" ]]; do
 done < "$TEMP_RAW"
 
 # Sort, deduplicate (only true duplicates), and format
-# Use sort -n | uniq instead of sort -u -n to properly handle multiple events per day
-sort -n "$TEMP_EXPANDED" | uniq | awk -F'\t' '{
-    month = substr($1, 5, 2) + 0;
-    day   = substr($1, 7, 2) + 0;
+# Sort by date first, then by time (extracted from summary)
+# All-day events (no time) will sort first (time = "00:00")
+awk -F'\t' '{
+    date = $1
+    summary = $2
+    # Extract time from summary if present (format: "Event, HH:MM")
+    time = "00:00"  # Default for all-day events
+    # Look for pattern ", HH:MM" or ", H:MM" at the end
+    if (match(summary, /, [0-9]{1,2}:[0-9]{2}$/)) {
+        # Extract the time part (everything after the last comma and space)
+        time_str = substr(summary, RSTART + 2)
+        # Parse hour and minute
+        split(time_str, time_parts, ":")
+        hour = time_parts[1] + 0  # Convert to number to remove leading zeros
+        min = time_parts[2]
+        # Format as HH:MM with leading zeros
+        if (hour < 10) {
+            time = "0" hour ":" min
+        } else {
+            time = hour ":" min
+        }
+    }
+    # Create sort key: date + time (YYYYMMDDHHMM)
+    sort_key = date substr(time, 1, 2) substr(time, 4, 2)
+    print sort_key "\t" date "\t" summary
+}' "$TEMP_EXPANDED" | sort -n | uniq | awk -F'\t' '{
+    date = $2
+    summary = $3
+    month = substr(date, 5, 2) + 0;
+    day   = substr(date, 7, 2) + 0;
     split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", m, " ");
-    print m[month] " " day "\t" $2;
+    print m[month] " " day "\t" summary;
 }' > "$CAL_FILE"
 
 # Debug: Check if specific events are in the raw data
