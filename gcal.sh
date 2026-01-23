@@ -5,6 +5,7 @@ ENV_FILE="$(dirname "$0")/.env"
 CAL_FILE="./calendar" # use $HOME later
 TEMP_RAW="/tmp/cal_raw.txt"
 TODAY=$(date +%Y%m%d)
+NOW_TIME=$(date +%H:%M)
 END_DATE=$(date -d "+2 months" "+%Y%m%d" 2>/dev/null || date -v+2m "+%Y%m%d" 2>/dev/null || echo "$(date -d "$(date +%Y-%m-01) +3 months -1 day" "+%Y%m%d")")
 
 # 1. Load the .env file
@@ -210,6 +211,45 @@ convert_time() {
     fi
 }
 
+# Function to check if event is still ongoing (not finished)
+# Returns 0 (true) if event should be kept, 1 (false) if it should be filtered out
+is_event_ongoing() {
+    local event_date=$1  # YYYYMMDD format
+    local end_datetime=$2  # Full datetime string (YYYYMMDDTHHMMSS or YYYYMMDD)
+    local tzid=$3
+    
+    # If event is not today, keep it
+    if [[ $event_date != "$TODAY" ]]; then
+        return 0
+    fi
+    
+    # If no end time specified (all-day or no DTEND), keep it
+    if [[ -z "$end_datetime" ]] || [[ "$end_datetime" == "NONE" ]] || [[ ${#end_datetime} -eq 8 ]]; then
+        return 0
+    fi
+    
+    # Get end time in local timezone
+    local end_time=$(convert_time "$end_datetime" "$tzid")
+    
+    # If we couldn't get end time, keep the event (better safe than sorry)
+    if [[ -z "$end_time" ]]; then
+        return 0
+    fi
+    
+    # Compare current time with end time
+    # Convert to minutes since midnight for comparison
+    current_minutes=$(date -d "$(date +%Y-%m-%d) $NOW_TIME" +%s 2>/dev/null || echo 0)
+    end_minutes=$(date -d "$(date +%Y-%m-%d) $end_time" +%s 2>/dev/null || echo 0)
+    
+    # If current time is past end time, filter it out (return 1)
+    if [[ $current_minutes -gt $end_minutes ]]; then
+        return 1
+    fi
+    
+    # Event is still ongoing, keep it (return 0)
+    return 0
+}
+
 # Function to expand recurring events
 expand_recurrence() {
     local dtstart=$1
@@ -385,12 +425,15 @@ expand_recurrence() {
             datetime_str="${current_date}T${hour}${min}${sec}"
             local_date=$(convert_date "$datetime_str" "$tzid")
             if [[ -n "$local_date" ]] && [[ $local_date -ge "$TODAY" ]] && [[ $local_date -le "$END_DATE" ]]; then
-                # Get the time in local timezone
-                local_time=$(convert_time "$datetime_str" "$tzid")
-                if [[ -n "$local_time" ]]; then
-                    echo -e "${local_date}\t${summary}, ${local_time}"
-                else
-                    echo -e "${local_date}\t${summary}"
+                # Check if event is still ongoing (not finished if it's today)
+                if is_event_ongoing "$local_date" "$dtend" "$tzid"; then
+                    # Get the time in local timezone
+                    local_time=$(convert_time "$datetime_str" "$tzid")
+                    if [[ -n "$local_time" ]]; then
+                        echo -e "${local_date}\t${summary}, ${local_time}"
+                    else
+                        echo -e "${local_date}\t${summary}"
+                    fi
                 fi
             fi
             
@@ -494,12 +537,15 @@ while IFS=$'\t' read -r line || [[ -n "$line" ]]; do
                 fi
                 
                 while [[ $current_day -le "$max_day" ]]; do
-                    # For multi-day events, get time from the original start date
-                    local_time=$(convert_time "$raw_date" "$tzid")
-                    if [[ -n "$local_time" ]]; then
-                        echo -e "${current_day}\t${summary}, ${local_time}" >> "$TEMP_EXPANDED"
-                    else
-                        echo -e "${current_day}\t${summary}" >> "$TEMP_EXPANDED"
+                    # For multi-day events, check if still ongoing (only relevant if it's today)
+                    if is_event_ongoing "$current_day" "$dtend_date" "$tzid"; then
+                        # For multi-day events, get time from the original start date
+                        local_time=$(convert_time "$raw_date" "$tzid")
+                        if [[ -n "$local_time" ]]; then
+                            echo -e "${current_day}\t${summary}, ${local_time}" >> "$TEMP_EXPANDED"
+                        else
+                            echo -e "${current_day}\t${summary}" >> "$TEMP_EXPANDED"
+                        fi
                     fi
                     # Move to next day
                     current_day=$(date -d "${current_day:0:4}-${current_day:4:2}-${current_day:6:2} +1 day" "+%Y%m%d" 2>/dev/null || echo "$current_day")
@@ -510,12 +556,15 @@ while IFS=$'\t' read -r line || [[ -n "$line" ]]; do
                 done
             else
                 # Single-day event (or same-day event with start/end times)
-                # Get the time in local timezone
-                local_time=$(convert_time "$raw_date" "$tzid")
-                if [[ -n "$local_time" ]]; then
-                    echo -e "${local_start}\t${summary}, ${local_time}" >> "$TEMP_EXPANDED"
-                else
-                    echo -e "${local_start}\t${summary}" >> "$TEMP_EXPANDED"
+                # Check if event is still ongoing (not finished if it's today)
+                if is_event_ongoing "$local_start" "$dtend_date" "$tzid"; then
+                    # Get the time in local timezone
+                    local_time=$(convert_time "$raw_date" "$tzid")
+                    if [[ -n "$local_time" ]]; then
+                        echo -e "${local_start}\t${summary}, ${local_time}" >> "$TEMP_EXPANDED"
+                    else
+                        echo -e "${local_start}\t${summary}" >> "$TEMP_EXPANDED"
+                    fi
                 fi
             fi
         fi
