@@ -1,0 +1,149 @@
+#!/bin/bash
+
+# calendr - Display calendar events grouped by date
+# Shows today and tomorrow, or Friday + weekend + Monday if it's Friday
+
+CAL_FILE="$(dirname "$0")/calendar"
+
+# Check for --count option
+COUNT_ONLY=false
+if [[ "$1" == "--count" ]]; then
+    COUNT_ONLY=true
+fi
+
+# Get current date info
+TODAY=$(date +%Y-%m-%d)
+TODAY_DAY=$(date +%d)
+TODAY_MONTH=$(date +%b)
+TODAY_DOW=$(date +%u)  # 1=Monday, 7=Sunday
+
+# Function to normalize date string (remove leading zero from day)
+normalize_date() {
+    echo "$1" | sed 's/ 0\([1-9]\) / \1 /' | sed 's/ 00 / 0 /'
+}
+
+# Determine which dates to show
+if [[ $TODAY_DOW -eq 5 ]]; then
+    # Friday - show Friday, Saturday, Sunday, Monday (4 days)
+    TARGET_DATES=()
+    TARGET_DATES_NORMALIZED=()
+    for i in {0..3}; do
+        date_str=$(date -d "$TODAY +$i days" "+%b %d" 2>/dev/null || date -v+${i}d "+%b %d" 2>/dev/null)
+        if [[ -n "$date_str" ]]; then
+            TARGET_DATES+=("$date_str")
+            TARGET_DATES_NORMALIZED+=("$(normalize_date "$date_str")")
+        fi
+    done
+else
+    # Other days - show today and tomorrow (2 days)
+    TARGET_DATES=()
+    TARGET_DATES_NORMALIZED=()
+    for i in {0..1}; do
+        date_str=$(date -d "$TODAY +$i days" "+%b %d" 2>/dev/null || date -v+${i}d "+%b %d" 2>/dev/null)
+        if [[ -n "$date_str" ]]; then
+            TARGET_DATES+=("$date_str")
+            TARGET_DATES_NORMALIZED+=("$(normalize_date "$date_str")")
+        fi
+    done
+fi
+
+# Check if calendar file exists
+if [[ ! -f "$CAL_FILE" ]]; then
+    if [[ "$COUNT_ONLY" == true ]]; then
+        echo "0"
+    else
+        echo "Error: Calendar file not found at $CAL_FILE" >&2
+    fi
+    exit 1
+fi
+
+# Parse calendar file and collect events for target dates
+declare -A EVENTS_BY_DATE
+TOTAL_COUNT=0
+
+while IFS=$'\t' read -r date_str event_desc || [[ -n "$date_str" ]]; do
+    # Skip empty lines
+    [[ -z "$date_str" ]] && continue
+    
+    # Normalize the date from calendar file
+    normalized_cal_date=$(normalize_date "$date_str")
+    
+    # Check if this date is in our target dates (compare normalized versions)
+    for i in "${!TARGET_DATES_NORMALIZED[@]}"; do
+        if [[ "$normalized_cal_date" == "${TARGET_DATES_NORMALIZED[$i]}" ]]; then
+            # Use the normalized date as key
+            if [[ -z "${EVENTS_BY_DATE[$normalized_cal_date]}" ]]; then
+                EVENTS_BY_DATE[$normalized_cal_date]=""
+            fi
+            # Append event (with newline separator)
+            if [[ -n "${EVENTS_BY_DATE[$normalized_cal_date]}" ]]; then
+                EVENTS_BY_DATE[$normalized_cal_date]+=$'\n'
+            fi
+            EVENTS_BY_DATE[$normalized_cal_date]+="$event_desc"
+            TOTAL_COUNT=$((TOTAL_COUNT + 1))
+            break
+        fi
+    done
+done < "$CAL_FILE"
+
+# Output results
+if [[ "$COUNT_ONLY" == true ]]; then
+    echo "$TOTAL_COUNT"
+else
+    # Output events grouped by date
+    # Sort dates chronologically using the normalized target dates
+    for i in "${!TARGET_DATES_NORMALIZED[@]}"; do
+        normalized_date="${TARGET_DATES_NORMALIZED[$i]}"
+        
+        if [[ -n "${EVENTS_BY_DATE[$normalized_date]}" ]]; then
+            # Get full date for header (e.g., "Fri 23 Jan")
+            # Parse month and day from normalized_date
+            month=$(echo "$normalized_date" | awk '{print $1}')
+            day=$(echo "$normalized_date" | awk '{print $2}')
+            
+            # Get current year
+            year=$(date +%Y)
+            
+            # Convert month abbreviation to number for date calculation
+            case "$month" in
+                Jan) month_num=01 ;;
+                Feb) month_num=02 ;;
+                Mar) month_num=03 ;;
+                Apr) month_num=04 ;;
+                May) month_num=05 ;;
+                Jun) month_num=06 ;;
+                Jul) month_num=07 ;;
+                Aug) month_num=08 ;;
+                Sep) month_num=09 ;;
+                Oct) month_num=10 ;;
+                Nov) month_num=11 ;;
+                Dec) month_num=12 ;;
+                *) month_num=01 ;;
+            esac
+            
+            # Format day with leading zero for date calculation
+            day_padded="$day"
+            if [[ ${#day} -eq 1 ]]; then
+                day_padded="0$day"
+            fi
+            
+            # Get day of week abbreviation
+            full_date="$year-$month_num-$day_padded"
+            dow=$(date -d "$full_date" "+%a" 2>/dev/null || date -j -f "%Y-%m-%d" "$full_date" "+%a" 2>/dev/null || echo "")
+            
+            # Format header: "Fri 23 Jan" (DOW day month, day without leading zero)
+            if [[ -n "$dow" ]]; then
+                echo "$dow $day $month"
+            else
+                echo "$day $month"
+            fi
+            
+            # Output events for this date (already sorted by time from calendar file)
+            echo "${EVENTS_BY_DATE[$normalized_date]}" | while IFS= read -r event; do
+                [[ -n "$event" ]] && echo "  $event"
+            done
+            
+            echo ""  # Empty line between dates
+        fi
+    done
+fi
