@@ -14,3 +14,22 @@ used by the `calendar` command to output either today-tomorrow list, or more.
 - `calendar` is part of bsdmainutils; it's available on AUR
 - chmod +x gcal.sh
 - .env file will provide with an 'array' of urls to download events, one ics per line
+
+# Calendr
+- comes with a custom output script: `./calendr` and `./calendr --count` for simpler integration in the Waybar
+
+# Context
+https://dsl.org/cookbook/cookbook_34.html
+https://news.ycombinator.com/item?id=46726099
+repository: https://github.com/jrgd/calendar_tools
+
+# Notes
+- personnal interpretation of the ICS rules: an event spanning multiple days will start on its first day at the time of the event; 
+the next day however the event will start as day start (configurable option in calendr)
+- i'm on EST so i had to deviate from UTC, your mileage may vary
+
+# Todo
+- this week calendr
+- next week calendr
+- dopcument and set cron gcal
+- create event script (that woudl update remote calendar as well - tbc)
