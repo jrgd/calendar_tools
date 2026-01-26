@@ -1,18 +1,35 @@
 #!/bin/bash
 
 # calendr - Display calendar events grouped by date
-# Shows today and tomorrow, or Friday + weekend + Monday if it's Friday
+# Shows today and tomorrow, or Friday + weekend + Monday if it's Friday,
+# or Saturday + Sunday + Monday if it's Saturday
 
 CAL_FILE="$(dirname "$0")/calendar"
 
 # Check for options
 COUNT_ONLY=false
 WAYBAR_JSON=false
-if [[ "$1" == "--count" ]]; then
-    COUNT_ONLY=true
-elif [[ "$1" == "--waybar-json" ]]; then
-    WAYBAR_JSON=true
-fi
+WEEK_MODE=false
+NEXT_WEEK_MODE=false
+SHOW_HELP=false
+
+case "$1" in
+    --count)
+        COUNT_ONLY=true
+        ;;
+    --waybar-json)
+        WAYBAR_JSON=true
+        ;;
+    --week)
+        WEEK_MODE=true
+        ;;
+    --nextweek)
+        NEXT_WEEK_MODE=true
+        ;;
+    --help)
+        SHOW_HELP=true
+        ;;
+esac
 
 # Get current date info
 TODAY=$(date +%Y-%m-%d)
@@ -20,17 +37,97 @@ TODAY_DAY=$(date +%d)
 TODAY_MONTH=$(date +%b)
 TODAY_DOW=$(date +%u)  # 1=Monday, 7=Sunday
 
+# Function to show help
+show_help() {
+    cat << EOF
+calendr - Display calendar events grouped by date
+
+USAGE:
+    calendr [OPTION]
+
+OPTIONS:
+    (no option)    Show today and tomorrow (or Friday+weekend+Monday if Friday,
+                   or Saturday+Sunday+Monday if Saturday)
+    --count       Display only the number of events
+    --week        Display current week (Monday to Sunday)
+    --nextweek    Display next week (Monday to Sunday)
+    --waybar-json Output JSON format for waybar with text (count) and tooltip
+    --help        Show this help message
+
+EXAMPLES:
+    calendr                    # Show upcoming events
+    calendr --count            # Show event count
+    calendr --week             # Show current week
+    calendr --nextweek         # Show next week
+    calendr --waybar-json      # JSON output for waybar
+EOF
+}
+
 # Function to normalize date string (remove leading zero from day)
 normalize_date() {
     echo "$1" | sed 's/ 0\([1-9]\) / \1 /' | sed 's/ 00 / 0 /'
 }
 
+# Function to get Monday of a given week (0 = current week, 1 = next week)
+get_week_monday() {
+    local week_offset=$1
+    local current_dow=$(date +%u)  # 1=Monday, 7=Sunday
+    local days_back=$((current_dow - 1))  # Days to go back to get to Monday
+    local days_forward=$((week_offset * 7))  # Days to add for next week
+    
+    # Calculate Monday: go back to Monday, then add week offset
+    date -d "$TODAY -${days_back} days +${days_forward} days" "+%Y-%m-%d" 2>/dev/null || \
+    date -v-${days_back}d -v+${days_forward}d "+%Y-%m-%d" 2>/dev/null || \
+    echo "$TODAY"
+}
+
+# Show help if requested
+if [[ "$SHOW_HELP" == true ]]; then
+    show_help
+    exit 0
+fi
+
 # Determine which dates to show
-if [[ $TODAY_DOW -eq 5 ]]; then
+if [[ "$WEEK_MODE" == true ]]; then
+    # Current week - Monday to Sunday
+    MONDAY=$(get_week_monday 0)
+    TARGET_DATES=()
+    TARGET_DATES_NORMALIZED=()
+    for i in {0..6}; do
+        date_str=$(date -d "$MONDAY +$i days" "+%b %d" 2>/dev/null || date -v+${i}d -j -f "%Y-%m-%d" "$MONDAY" "+%b %d" 2>/dev/null)
+        if [[ -n "$date_str" ]]; then
+            TARGET_DATES+=("$date_str")
+            TARGET_DATES_NORMALIZED+=("$(normalize_date "$date_str")")
+        fi
+    done
+elif [[ "$NEXT_WEEK_MODE" == true ]]; then
+    # Next week - Monday to Sunday
+    NEXT_MONDAY=$(get_week_monday 1)
+    TARGET_DATES=()
+    TARGET_DATES_NORMALIZED=()
+    for i in {0..6}; do
+        date_str=$(date -d "$NEXT_MONDAY +$i days" "+%b %d" 2>/dev/null || date -v+${i}d -j -f "%Y-%m-%d" "$NEXT_MONDAY" "+%b %d" 2>/dev/null)
+        if [[ -n "$date_str" ]]; then
+            TARGET_DATES+=("$date_str")
+            TARGET_DATES_NORMALIZED+=("$(normalize_date "$date_str")")
+        fi
+    done
+elif [[ $TODAY_DOW -eq 5 ]]; then
     # Friday - show Friday, Saturday, Sunday, Monday (4 days)
     TARGET_DATES=()
     TARGET_DATES_NORMALIZED=()
     for i in {0..3}; do
+        date_str=$(date -d "$TODAY +$i days" "+%b %d" 2>/dev/null || date -v+${i}d "+%b %d" 2>/dev/null)
+        if [[ -n "$date_str" ]]; then
+            TARGET_DATES+=("$date_str")
+            TARGET_DATES_NORMALIZED+=("$(normalize_date "$date_str")")
+        fi
+    done
+elif [[ $TODAY_DOW -eq 6 ]]; then
+    # Saturday - show Saturday, Sunday, Monday (3 days)
+    TARGET_DATES=()
+    TARGET_DATES_NORMALIZED=()
+    for i in {0..2}; do
         date_str=$(date -d "$TODAY +$i days" "+%b %d" 2>/dev/null || date -v+${i}d "+%b %d" 2>/dev/null)
         if [[ -n "$date_str" ]]; then
             TARGET_DATES+=("$date_str")
@@ -96,7 +193,9 @@ generate_formatted_output() {
     for i in "${!TARGET_DATES_NORMALIZED[@]}"; do
         normalized_date="${TARGET_DATES_NORMALIZED[$i]}"
         
-        if [[ -n "${EVENTS_BY_DATE[$normalized_date]}" ]]; then
+        # For week mode, show all days even if they have no events
+        # For other modes, only show days with events
+        if [[ "$WEEK_MODE" == true ]] || [[ "$NEXT_WEEK_MODE" == true ]] || [[ -n "${EVENTS_BY_DATE[$normalized_date]}" ]]; then
             # Get full date for header (e.g., "Fri 23 Jan")
             # Parse month and day from normalized_date
             month=$(echo "$normalized_date" | awk '{print $1}')
