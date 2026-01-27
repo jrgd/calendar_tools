@@ -1,0 +1,192 @@
+#!/bin/bash
+
+# calendr-notify - Send notifications for upcoming calendar events
+# Designed to run via systemd user timer every 5 minutes
+
+SCRIPT_DIR="$(dirname "$0")"
+ENV_FILE="$SCRIPT_DIR/.env"
+CAL_FILE="$SCRIPT_DIR/calendar"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/calendr"
+NOTIFIED_DIR="$STATE_DIR/notified"
+
+# Create state directory if it doesn't exist
+mkdir -p "$NOTIFIED_DIR"
+
+# Load configuration from .env file
+if [[ -f "$ENV_FILE" ]]; then
+    source "$ENV_FILE"
+fi
+
+# Configuration with defaults
+NOTIFY_MINUTES="${NOTIFY_MINUTES:-30}"
+NOTIFY_TITLE="${NOTIFY_TITLE:-📅 Event starting soon}"
+
+# Get current date and time
+TODAY=$(date +%Y%m%d)
+NOW=$(date +%H:%M)
+NOW_EPOCH=$(date +%s)
+
+# Calculate notification window end time (in minutes since midnight)
+NOTIFY_WINDOW_END=$(( $(date -d "now +${NOTIFY_MINUTES} minutes" +%s 2>/dev/null || date -v+${NOTIFY_MINUTES}M +%s 2>/dev/null) ))
+
+# Function to convert HH:MM to minutes since midnight
+time_to_minutes() {
+    local time_str="$1"
+    if [[ $time_str =~ ^([0-9]{1,2}):([0-9]{2})$ ]]; then
+        local hour=${BASH_REMATCH[1]}
+        local min=${BASH_REMATCH[2]}
+        # Remove leading zero from hour if present
+        hour=$((10#$hour))
+        min=$((10#$min))
+        echo $((hour * 60 + min))
+    else
+        echo ""
+    fi
+}
+
+# Function to calculate minutes until event
+minutes_until() {
+    local event_time="$1"
+    local event_minutes=$(time_to_minutes "$event_time")
+    if [[ -z "$event_minutes" ]]; then
+        echo ""
+        return
+    fi
+    
+    # Get event epoch time (today at event_time)
+    local event_epoch=$(date -d "$(date +%Y-%m-%d) $event_time" +%s 2>/dev/null || \
+                       date -j -f "%Y-%m-%d %H:%M" "$(date +%Y-%m-%d) $event_time" +%s 2>/dev/null)
+    
+    if [[ -z "$event_epoch" ]]; then
+        echo ""
+        return
+    fi
+    
+    # Calculate minutes until event
+    local diff=$(( (event_epoch - NOW_EPOCH) / 60 ))
+    echo "$diff"
+}
+
+# Function to create notification ID (for tracking)
+create_notification_id() {
+    local date_str="$1"
+    local event_desc="$2"
+    # Create a hash from date + event description
+    echo "${date_str}_$(echo -n "$event_desc" | md5sum | cut -d' ' -f1)"
+}
+
+# Function to check if already notified
+is_already_notified() {
+    local notif_id="$1"
+    [[ -f "$NOTIFIED_DIR/$notif_id" ]]
+}
+
+# Function to mark as notified
+mark_as_notified() {
+    local notif_id="$1"
+    touch "$NOTIFIED_DIR/$notif_id"
+}
+
+# Function to clean old notification files (older than 1 day)
+clean_old_notifications() {
+    find "$NOTIFIED_DIR" -type f -mtime +1 -delete 2>/dev/null || true
+}
+
+# Clean old notifications
+clean_old_notifications
+
+# Check if calendar file exists
+if [[ ! -f "$CAL_FILE" ]]; then
+    exit 0  # Silently exit if calendar file doesn't exist
+fi
+
+# Parse calendar file and find events to notify
+while IFS=$'\t' read -r date_str event_desc || [[ -n "$date_str" ]]; do
+    # Skip empty lines
+    [[ -z "$date_str" ]] && continue
+    
+    # Parse date (format: "Jan 26")
+    month=$(echo "$date_str" | awk '{print $1}')
+    day=$(echo "$date_str" | awk '{print $2}')
+    
+    # Convert month abbreviation to number
+    case "$month" in
+        Jan) month_num=01 ;;
+        Feb) month_num=02 ;;
+        Mar) month_num=03 ;;
+        Apr) month_num=04 ;;
+        May) month_num=05 ;;
+        Jun) month_num=06 ;;
+        Jul) month_num=07 ;;
+        Aug) month_num=08 ;;
+        Sep) month_num=09 ;;
+        Oct) month_num=10 ;;
+        Nov) month_num=11 ;;
+        Dec) month_num=12 ;;
+        *) continue ;;  # Skip invalid months
+    esac
+    
+    # Format day with leading zero if needed
+    day_padded="$day"
+    if [[ ${#day} -eq 1 ]]; then
+        day_padded="0$day"
+    fi
+    
+    # Get current year
+    year=$(date +%Y)
+    
+    # Create full date string
+    event_date="${year}${month_num}${day_padded}"
+    
+    # Only process today's events
+    if [[ "$event_date" != "$TODAY" ]]; then
+        continue
+    fi
+    
+    # Extract time from event description (format: "Event Name, HH:MM")
+    event_time=""
+    if [[ "$event_desc" =~ ,\ ([0-9]{1,2}:[0-9]{2})$ ]]; then
+        event_time="${BASH_REMATCH[1]}"
+        # Remove time from event description for display
+        event_name="${event_desc%, *}"
+    else
+        # All-day event (no time) - skip for now
+        continue
+    fi
+    
+    # Calculate minutes until event
+    minutes_until_event=$(minutes_until "$event_time")
+    
+    if [[ -z "$minutes_until_event" ]]; then
+        continue
+    fi
+    
+    # Check if event is within notification window (0 to NOTIFY_MINUTES minutes)
+    if [[ $minutes_until_event -ge 0 ]] && [[ $minutes_until_event -le $NOTIFY_MINUTES ]]; then
+        # Create notification ID
+        notif_id=$(create_notification_id "$event_date" "$event_desc")
+        
+        # Check if already notified
+        if is_already_notified "$notif_id"; then
+            continue
+        fi
+        
+        # Format minutes text
+        if [[ $minutes_until_event -eq 0 ]]; then
+            minutes_text="Starting now"
+        elif [[ $minutes_until_event -eq 1 ]]; then
+            minutes_text="Starting in 1 minute"
+        else
+            minutes_text="Starting in $minutes_until_event minutes"
+        fi
+        
+        # Send notification via notify-send (works with mako)
+        # Format: title\nbody
+        notify-send -a calendr "$NOTIFY_TITLE" "$event_name, $event_time"$'\n'"$minutes_text" 2>/dev/null || true
+        
+        # Mark as notified
+        mark_as_notified "$notif_id"
+    fi
+done < "$CAL_FILE"
+
+exit 0

@@ -1,0 +1,64 @@
+#!/bin/bash
+
+# gcal-sync - Wrapper script for gcal.sh with minimal visual feedback
+# Designed to be called from waybar on-click
+# Shows brief notification instead of opening terminal
+
+SCRIPT_DIR="$(dirname "$0")"
+# Get absolute path to script directory
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
+GCAL_SCRIPT="$SCRIPT_DIR/gcal.sh"
+
+# Check if notification should be shown (can be disabled via env var)
+SHOW_NOTIFICATION="${SHOW_NOTIFICATION:-1}"
+
+# Show brief notification that sync is starting
+if [[ "$SHOW_NOTIFICATION" == "1" ]]; then
+    notify-send -a calendr -t 1500 "📅 Calendar" "Syncing..." 2>/dev/null || true
+fi
+
+# Change to script directory before running (important for relative paths in gcal.sh)
+cd "$SCRIPT_DIR" || {
+    notify-send -a calendr -t 3000 "📅 Calendar" "Error: Cannot access calendar directory" 2>/dev/null || true
+    exit 1
+}
+
+# Debug mode (set DEBUG=1 in waybar config to see errors)
+DEBUG="${DEBUG:-0}"
+if [[ "$DEBUG" == "1" ]]; then
+    LOG_FILE="/tmp/gcal-sync.log"
+    # Run the sync script in background with logging
+    "$GCAL_SCRIPT" > "$LOG_FILE" 2>&1 &
+else
+    # Run the sync script in background (non-blocking)
+    "$GCAL_SCRIPT" > /dev/null 2>&1 &
+fi
+SYNC_PID=$!
+
+# Wait briefly to check if it starts successfully
+sleep 0.5
+
+# Check if process is still running (sync started successfully)
+if kill -0 $SYNC_PID 2>/dev/null; then
+    # Sync is running - show completion notification after a short delay
+    (
+        # Wait for sync to complete (with timeout)
+        timeout 60 bash -c "while kill -0 $SYNC_PID 2>/dev/null; do sleep 0.5; done" 2>/dev/null || true
+        
+        # Check exit status if possible
+        if ! kill -0 $SYNC_PID 2>/dev/null; then
+            # Process completed
+            if [[ "$SHOW_NOTIFICATION" == "1" ]]; then
+                notify-send -a calendr -t 1500 "📅 Calendar" "Synced ✓" 2>/dev/null || true
+            fi
+        fi
+    ) &
+else
+    # Process already finished or failed to start
+    if [[ "$SHOW_NOTIFICATION" == "1" ]]; then
+        notify-send -a calendr -t 2000 "📅 Calendar" "Sync complete" 2>/dev/null || true
+    fi
+fi
+
+# Exit immediately (don't wait for sync)
+exit 0
