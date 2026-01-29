@@ -182,7 +182,8 @@ while IFS=$'\t' read -r date_str event_desc || [[ -n "$date_str" ]]; do
         
         # Send notification via notify-send (works with mako)
         # Format: title\nbody
-        notify-send -a calendr "$NOTIFY_TITLE" "$event_name, $event_time"$'\n'"$minutes_text" 2>/dev/null || true
+        # -t 0 means the notification will stay until dismissed
+        notify-send -a calendr -t 0 "$NOTIFY_TITLE" "$event_name, $event_time"$'\n'"$minutes_text" 2>/dev/null || true
         
         # Mark as notified
         mark_as_notified "$notif_id"
