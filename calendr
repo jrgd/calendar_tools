@@ -65,7 +65,7 @@ EOF
 
 # Function to normalize date string (remove leading zero from day)
 normalize_date() {
-    echo "$1" | sed 's/ 0\([1-9]\) / \1 /' | sed 's/ 00 / 0 /'
+    echo "$1" | sed 's/ 0\([1-9]\)$/ \1/' | sed 's/ 0\([1-9]\) / \1 /' | sed 's/ 00 / 0 /'
 }
 
 # Function to get Monday of a given week (0 = current week, 1 = next week)
