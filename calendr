@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Capture the calendar output and escape newlines/quotes
+# CAL_OUTPUT=$(cal -m | sed 's/\x1b\[[0-9;]*m//g' | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
+# CAL_OUTPUT=$(cal -m | sed "s/\x1b\[7m/<b>/g; s/\x1b\[27m/<\/b>/g; s/\x1b\[[0-9;]*m//g" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
+# CAL_OUTPUT=$(cal -m | sed "s/\b${TODAY}\b/<b>${TODAY}<\/b>/g" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
+TODAY=$(date +%-d)
+CAL_OUTPUT=$(cal -m | sed "s/\b${TODAY}\b/<span foreground='#333333' background='#777777'><b>${TODAY}<\/b><\/span>/g" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
 # calendr - Display calendar events grouped by date
 # Shows today and tomorrow, or Friday + weekend + Monday if it's Friday,
 # or Saturday + Sunday + Monday if it's Saturday
@@ -272,10 +278,13 @@ elif [[ "$WAYBAR_JSON" == true ]]; then
     TOOLTIP_OUTPUT="${TOOLTIP_OUTPUT%$'\n'}"
     
     # Escape the tooltip for JSON
+    # Output as valid JSON
+
+
     TOOLTIP_ESCAPED=$(escape_json "$TOOLTIP_OUTPUT")
     
     # Output JSON
-    echo "{\"text\":\"$TOTAL_COUNT\",\"tooltip\":\"$TOOLTIP_ESCAPED\"}"
+    echo "{\"text\":\"$TOTAL_COUNT\",\"tooltip\":\"$CAL_OUTPUT \n $TOOLTIP_ESCAPED\"}"
 else
     # Regular output
     generate_formatted_output
