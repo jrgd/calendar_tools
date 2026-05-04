@@ -10,13 +10,15 @@ CAL_OUTPUT=$(cal -m | sed "s/\b${TODAY}\b/<span foreground='#333333' background=
 # Shows today and tomorrow, or Friday + weekend + Monday if it's Friday,
 # or Saturday + Sunday + Monday if it's Saturday
 
-CAL_FILE="$(dirname "$0")/calendar"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CAL_FILE="${CALENDR_CAL_FILE:-$SCRIPT_DIR/calendar}"
 
 # Check for options
 COUNT_ONLY=false
 WAYBAR_JSON=false
 WEEK_MODE=false
 NEXT_WEEK_MODE=false
+TODAY_ONLY=false
 SHOW_HELP=false
 
 case "$1" in
@@ -31,6 +33,9 @@ case "$1" in
         ;;
     --nextweek)
         NEXT_WEEK_MODE=true
+        ;;
+    --today)
+        TODAY_ONLY=true
         ;;
     --help)
         SHOW_HELP=true
@@ -54,6 +59,7 @@ USAGE:
 OPTIONS:
     (no option)    Show today and tomorrow (or Friday+weekend+Monday if Friday,
                    or Saturday+Sunday+Monday if Saturday)
+    --today       Display only today's events
     --count       Display only the number of events
     --week        Display current week (Monday to Sunday)
     --nextweek    Display next week (Monday to Sunday)
@@ -62,6 +68,7 @@ OPTIONS:
 
 EXAMPLES:
     calendr                    # Show upcoming events
+    calendr --today            # Show today's events only
     calendr --count            # Show event count
     calendr --week             # Show current week
     calendr --nextweek         # Show next week
@@ -94,7 +101,13 @@ if [[ "$SHOW_HELP" == true ]]; then
 fi
 
 # Determine which dates to show
-if [[ "$WEEK_MODE" == true ]]; then
+if [[ "$TODAY_ONLY" == true ]]; then
+    TARGET_DATES=()
+    TARGET_DATES_NORMALIZED=()
+    date_str=$(date -d "$TODAY" "+%b %d" 2>/dev/null || date -v0d "+%b %d" 2>/dev/null)
+    TARGET_DATES+=("$date_str")
+    TARGET_DATES_NORMALIZED+=("$(normalize_date "$date_str")")
+elif [[ "$WEEK_MODE" == true ]]; then
     # Current week - Monday to Sunday
     MONDAY=$(get_week_monday 0)
     TARGET_DATES=()
@@ -237,19 +250,25 @@ generate_formatted_output() {
             full_date="$year-$month_num-$day_padded"
             dow=$(date -d "$full_date" "+%a" 2>/dev/null || date -j -f "%Y-%m-%d" "$full_date" "+%a" 2>/dev/null || echo "")
             
-            # Format header: "Fri 23 Jan" (DOW day month, day without leading zero)
-            if [[ -n "$dow" ]]; then
-                echo "$dow $day $month"
-            else
-                echo "$day $month"
+            if [[ "$TODAY_ONLY" != true ]]; then
+                # Format header: "Fri 23 Jan" (DOW day month, day without leading zero)
+                if [[ -n "$dow" ]]; then
+                    echo "$dow $day $month"
+                else
+                    echo "$day $month"
+                fi
             fi
-            
+
             # Output events for this date (already sorted by time from calendar file)
             echo "${EVENTS_BY_DATE[$normalized_date]}" | while IFS= read -r event; do
-                [[ -n "$event" ]] && echo "  $event"
+                if [[ "$TODAY_ONLY" == true ]]; then
+                    [[ -n "$event" ]] && echo "$event"
+                else
+                    [[ -n "$event" ]] && echo "  $event"
+                fi
             done
-            
-            echo ""  # Empty line between dates
+
+            [[ "$TODAY_ONLY" != true ]] && echo ""  # Empty line between dates
         fi
     done
 }
